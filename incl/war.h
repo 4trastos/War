@@ -25,6 +25,5 @@ typedef struct s_war
 
 /*  FUNCTIONS   */
 
-int main(void);
 
 #endif
