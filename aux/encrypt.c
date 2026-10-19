@@ -20,7 +20,8 @@ void    ft_decrypt(char *signature)
         if (buffer[i] == '0' && buffer[i + 1] == 'x')
         {
             sscanf(&buffer[i], "0x%02x", &value);
-            printf("%c", (char)value ^ KEY);
+            if (value != '\0')
+                printf("%c", (char)value ^ KEY);
             i += 4;
             while (buffer[i] == ' ' || buffer[i] == ',' || buffer[i] == ';')
                 i++;
@@ -39,11 +40,8 @@ int main(int argc, char **argv)
     int     i = 0;
     char    *str = "War version 1.0 (c)oded Oct - 2026 by davgalle - [FINGERPRINT]";
 
-    printf("Arguemntos: ( %d )\n", argc);
-
     if (argc == 2)
     {
-        printf("Dentro\n");
         ft_decrypt(argv[1]);
         return(0);
     }

