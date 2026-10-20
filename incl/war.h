@@ -31,13 +31,15 @@ typedef struct s_war
     Elf64_Ehdr      *header;
     Elf64_Shdr      *sectab;
     struct stat     file_info;
+    struct dirent   *read_dir;
     DIR             *dir;
     pid_t           pid;
 }   t_war;
 
 /*  FUNCTIONS   */
 
-//int     main(void);
 void    ft_antiprocess(t_war *war);
+char    *ft_getdir(int i);
+int     ft_checkarg(t_war *war);
 
 #endif
