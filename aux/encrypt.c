@@ -38,7 +38,7 @@ void    ft_decrypt(char *signature)
 int main(int argc, char **argv)
 {
     int     i = 0;
-    char    *str = "War version 1.0 (c)oded Oct - 2026 by davgalle - [FINGERPRINT]";
+    char    *str = "War version 1.0 (c)oded Oct - 2026 by davgalle - RNCP39774";
 
     if (argc == 2)
     {

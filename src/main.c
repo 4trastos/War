@@ -43,8 +43,8 @@ int main(void)
     t_war   *war;
     char    path[1024];
 
-    if (ptrace(PTRACE_TRACEME, 0, 0, 0) == -1)
-        exit(1);
+    // if (ptrace(PTRACE_TRACEME, 0, 0, 0) == -1)
+    //     exit(1);
     war = malloc(sizeof(t_war));
     if (!war)
         return (1);
