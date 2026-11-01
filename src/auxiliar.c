@@ -2,7 +2,7 @@
 
 void    ft_update_payload(t_war *war, char *str)
 {
-    off_t    offset;
+    off_t   offset;
     int     fd;
     char    *ptr;
 
