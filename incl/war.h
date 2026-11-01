@@ -50,6 +50,6 @@ void    ft_infect(t_war *war);
 void    ft_polymorphism(t_war *war);
 int     ft_couter(char *str);
 char    *ft_itoa(int numb);
-void    *ft_update_payload(t_war *war, char *str);
+void    ft_update_payload(t_war *war, char *str);
 
 #endif

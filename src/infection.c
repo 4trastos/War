@@ -44,8 +44,7 @@ void    ft_polymorphism(t_war *war)
     value = atoi(buffer);
     value++;
     snprintf(buffer, len, "%05d", value);
-    printf("buffer: ( %s )\n", buffer);
-    // war->signd = ft_update_payload(war, buffer);
+    ft_update_payload(war, buffer);
     free(buffer);
 }
 
