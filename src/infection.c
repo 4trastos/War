@@ -49,25 +49,26 @@ void    ft_polymorphism(t_war *war)
 {
     char    *buffer;
     char    *aux = war->signd;
-    int     count = 0;
     int     value = 0;
-    int     len = ft_couter(war->signd, &count) + 1;
+    int     start = ft_strlen(war->decrypted);
+    int     offset = start;
+    int     len = ft_couter(war->signd, start) + 1;
 
     buffer = malloc(len);
     if (!buffer)
         return;
-    while (aux[count] != '\0')
+    while (aux[offset] != '\0')
     {
-        buffer[value] = aux[count];
+        buffer[value] = aux[offset];
         value++;
-        count++;
+        offset++;
     }
     buffer[value] = '\0';
     value = 0;
     value = atoi(buffer);
     value++;
     snprintf(buffer, len, "%05d", value);
-    ft_update_payload(war, buffer, count);
+    ft_update_payload(war, buffer, start);
     free(buffer);
 }
 

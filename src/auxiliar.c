@@ -1,23 +1,21 @@
 #include "../incl/war.h"
 
-int ft_couter(char *str, int *count)
+int ft_strlen(char *str)
 {
     int i = 0;
-    int len = 0;
-
     while (str[i] != '\0')
-    {
-        if (str[i] >= '0' && str[i] <= '9')
-        {
-            *count = i;
-            while (str[i] != '\0')
-            {
-                len++;
-                i++;
-            }
-            return (len);
-        }
         i++;
+    return (i);
+}
+
+int ft_couter(char *str, int offset)
+{
+    int len = 0;
+    
+    while (str[offset] != '\0')
+    {
+        len++;
+        offset++;
     }
     return (len);
 }

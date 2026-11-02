@@ -48,9 +48,10 @@ int     ft_is_infection(t_war *war);
 void    ft_obfuscation(t_war *war);
 void    ft_infect(t_war *war);
 void    ft_polymorphism(t_war *war);
-int     ft_couter(char *str, int *count);
+int     ft_couter(char *str, int offset);
 char    *ft_itoa(int numb);
 void    ft_update_payload(t_war *war, char *str, int count);
 void    ft_replace_marker(unsigned char *payload, unsigned int payload_len, unsigned char *marker, uint64_t value);
+int     ft_strlen(char *str);
 
 #endif
