@@ -2,7 +2,7 @@
 
 int ft_readelf(t_war *war)
 {
-    war->elf = mmap(NULL, war->file_info.st_size, PROT_READ|PROT_WRITE, MAP_PRIVATE, war->fd, 0);
+    war->elf = mmap(NULL, war->file_info.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, war->fd, 0);
     if (war->elf == MAP_FAILED)
     {
         close(war->fd);

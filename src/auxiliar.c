@@ -1,41 +1,15 @@
 #include "../incl/war.h"
 
-void    ft_update_payload(t_war *war, char *str)
-{
-    off_t   offset;
-    int     fd;
-    char    *ptr;
-
-    offset = (unsigned char *)war->signd - war->elf;
-    ptr = strchr((char *)war->signd, 'P');
-    if (!ptr)
-        return;
-    ptr++;
-    offset += (ptr - (char * )war->signd);
-    
-    fd = open(war->binary, O_RDWR);
-    if (fd == -1)
-        return;
-    if (lseek(fd, offset, SEEK_SET) == -1)
-    {
-        close(fd);
-        return;
-    }
-    write(fd, str, strlen(str));
-    close(fd);
-    return;
-}
-
-int ft_couter(char *str)
+int ft_couter(char *str, int *count)
 {
     int i = 0;
     int len = 0;
 
     while (str[i] != '\0')
     {
-        if (str[i] == 'P')
+        if (str[i] >= '0' && str[i] <= '9')
         {
-            i++;
+            *count = i;
             while (str[i] != '\0')
             {
                 len++;
@@ -47,3 +21,20 @@ int ft_couter(char *str)
     }
     return (len);
 }
+
+void    ft_replace_marker(unsigned char *payload, unsigned int payload_len, unsigned char *marker, uint64_t value)
+{
+    unsigned int    i;
+
+    i = 0;
+    while (i < payload_len - 4)
+    {
+        if (memcmp(&payload[i], marker, 4) == 0)
+        {
+            memcpy(&payload[i], &value, sizeof(uint64_t));
+            return;
+        }
+        i++;
+    }
+}
+
