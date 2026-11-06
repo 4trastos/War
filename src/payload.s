@@ -200,7 +200,7 @@ code_start:
     call    .get_base
 .get_base:
     pop     rbx
-    sub     rbx, 0x??               ; offset de next - _ft_payload
+    sub     rbx, 0x17               ; offset de next - _ft_payload
     mov     r12, [rbx + 2]          ; new_vaddr
     mov     r15, [rbx + 10]         ; e_entry_orig
     mov     rax, rbx
