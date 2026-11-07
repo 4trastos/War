@@ -22,7 +22,7 @@ $(PAYLOAD_OBJ): $(PAYLOAD_SRC)
 	$(AS) $(ASFLAGS) $(PAYLOAD_SRC) -o $(PAYLOAD_OBJ)
 
 $(PAYLOAD_BIN): $(PAYLOAD_OBJ)
-	objcopy -O binary --only-section=.text $(PAYLOAD_OBJ) $(PAYLOAD_BIN)
+	objcopy -O binary $(PAYLOAD_OBJ) $(PAYLOAD_BIN)
 
 $(PAYLOAD_HDR): $(PAYLOAD_BIN)
 	xxd -i $(PAYLOAD_BIN) > $(PAYLOAD_HDR)

