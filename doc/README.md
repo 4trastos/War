@@ -572,24 +572,28 @@ readelf -lW /tmp/test/mi_binario | grep INTERP
 # 6. Dynamic section
 readelf -d /tmp/test/mi_binario
 
-# 7. Sección .text del _start
-objdump -d --start-address=0x1080 --stop-address=0x10a6 /tmp/test/mi_binario
+# 7. Símbolo _start (dirección y tamaño)
+readelf -s /tmp/test/mi_binario | grep _start
 
-# 8. Solo los PT_NOTE
+# 8. Desensamblar el _start (usando la dirección y tamaño del paso 7)
+#    En mi_binario: _start en 0x10a0, tamaño 38 (0x26), termina en 0x10c6.
+objdump -d --start-address=0x10a0 --stop-address=0x10c6 /tmp/test/mi_binario
+
+# 9. Solo los PT_NOTE
 readelf -lW /tmp/test/mi_binario | grep NOTE
 
-# 9. Mapa de memoria en runtime (con getchar() en mi_binario.c)
+# 10. Mapa de memoria en runtime (con getchar() en mi_binario.c)
 /tmp/test/mi_binario &
 sleep 1
 pmap $(pgrep mi_binario)
 cat /proc/$(pgrep mi_binario)/maps
 kill $(pgrep mi_binario)
 
-# 10. Verificar la infección
+# 11. Verificar la infección
 strings /tmp/test/mi_binario | tail -1
 # War version 1.0 (c)oded Oct - 2026 by davgalle - <fingerprint>
 
-# 11. Verificar que el binario sigue funcionando
+# 12. Verificar que el binario sigue funcionando
 /tmp/test/mi_binario
 # Hola mundo!
 ```
