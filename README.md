@@ -714,18 +714,6 @@ strings /tmp/test/ls | grep davgalle
 
 **En la versión anterior, el `rename` en caliente desde el proceso principal marcaba `/proc/self/exe` como `(deleted)`, y coreutils abortaba con `Security violation`.** **En la versión actual, el `rename` lo hace el hijo (después del `fork`), y el padre sigue ejecutando el inodo original (sin `(deleted)`).** **Coreutils no aborta.** **`ls` funciona.**
 
-# Actualización del README: añadir la Fase 3 (propagación) y el `use_gap_flag`
-
-**El README actual está casi completo.** **Falta añadir:**
-
-1. **El `use_gap_flag` y los dos modos del payload (`.gap_mode` y `.note_mode`).**
-2. **La Fase 3 (propagación): el payload escanea `/tmp/test` y `/tmp/test2` e infecta los binarios no infectados.**
-3. **El contador de 7 dígitos (en vez de la fecha `2026`).**
-
-**Aquí tienes los apartados nuevos para añadir al README.** **Pégalos al final, después del apartado 12.**
-
----
-
 ## 13. El `use_gap_flag`: dos modos de payload
 
 **El payload tiene dos modos, según dónde se inyecte:**
